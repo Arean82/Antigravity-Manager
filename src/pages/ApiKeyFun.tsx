@@ -25,7 +25,8 @@ import {
     Wand2,
     CheckSquare,
     MinusSquare,
-    Square
+    Square,
+    Plus
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { showToast } from '../components/common/ToastContainer';
@@ -33,12 +34,29 @@ import { copyToClipboard } from '../utils/clipboard';
 import { request } from '../utils/request';
 import { generateUUID } from '../utils/uuid';
 import { getProfileInfo, type OpencodeProviderSummary } from '../utils/opencodeProfiles';
+import {
+    TRANSIT_PROVIDERS,
+    getProvider,
+    inferProviderId,
+    loadUserGateways,
+    saveUserGateways,
+    createUserGateway,
+    type TransitProvider,
+    type UserGatewayInput
+} from '../config/transitProviders';
+import {
+    fetchBalanceSummary,
+    emptyUsageSummary,
+    type UsageSummary,
+    type TransitQueryFn
+} from '../utils/transitBalance';
 
 interface ManagedApiKey {
     id: string;
     key: string;
     name: string;
     baseUrl: string;
+    providerId?: string;
     createdAt: number;
     lastUsedAt: number;
     lastStatus?: 'ok' | 'bad' | 'unknown';
@@ -46,19 +64,9 @@ interface ManagedApiKey {
     models?: string[];
 }
 
-interface UsageSummary {
-    remaining: string;
-    used: string;
-    todayRequests: string;
-    todayTokens: string;
-    totalRequests: string;
-    totalTokens: string;
-    unit: string;
-    isValid: boolean;
-}
-
 const STORAGE_KEY = 'apikey_fun_managed_keys_local';
-const DEFAULT_ENDPOINT = 'https://api.apikey.fan/v1';
+const DEFAULT_ENDPOINT = 'https://api.apikey.fan/v1'; // legacy fallback for keys saved without baseUrl
+const transitQuery: TransitQueryFn = (url, key) => request<string>('query_transit_info', { url, key });
 
 function maskKey(value: string): string {
     const trimmed = value.trim();
@@ -79,6 +87,66 @@ export const ApiKeyFun: React.FC = () => {
     const [apiKey, setApiKey] = useState('');
     const [baseUrl, setBaseUrl] = useState(DEFAULT_ENDPOINT);
     const [showApiKey, setShowApiKey] = useState(false);
+
+    // Gateway selection: presets + user-defined entries (hybrid registry)
+    const [providerId, setProviderId] = useState<string>('apikey-fun');
+    const [userGateways, setUserGateways] = useState<TransitProvider[]>(() => loadUserGateways());
+    const activeProvider = getProvider(providerId, userGateways);
+
+    const persistUserGateways = (next: TransitProvider[]) => {
+        setUserGateways(next);
+        saveUserGateways(next);
+    };
+
+    const handleSelectProvider = (id: string) => {
+        setProviderId(id);
+        const next = getProvider(id, userGateways);
+        if (next.baseUrl) setBaseUrl(next.baseUrl);
+    };
+
+    // Gateway editor modal state
+    const [gatewayEditorOpen, setGatewayEditorOpen] = useState(false);
+    const [editingGatewayId, setEditingGatewayId] = useState<string | null>(null);
+    const [gatewayForm, setGatewayForm] = useState<UserGatewayInput>({
+        name: '', baseUrl: '', balanceKind: 'sub2api-auto', claudeCompatible: true,
+    });
+
+    const openGatewayEditor = (provider?: TransitProvider) => {
+        setEditingGatewayId(provider?.id ?? null);
+        setGatewayForm(provider
+            ? {
+                name: provider.name,
+                baseUrl: provider.baseUrl,
+                balanceKind: provider.balanceKind,
+                claudeCompatible: provider.claudeCompatible,
+                claudeBaseUrl: provider.claudeBaseUrl,
+                website: provider.website,
+            }
+            : { name: '', baseUrl: '', balanceKind: 'sub2api-auto', claudeCompatible: true });
+        setGatewayEditorOpen(true);
+    };
+
+    const saveGatewayEditor = () => {
+        const name = gatewayForm.name.trim();
+        const baseUrlTrimmed = gatewayForm.baseUrl.trim().replace(/\/+$/, '');
+        if (!name || !baseUrlTrimmed) {
+            showToast(t('apiKeyFun.gateway.formIncomplete', { defaultValue: 'Name and Base URL are required' }), 'error');
+            return;
+        }
+        if (editingGatewayId) {
+            persistUserGateways(userGateways.map(g => g.id === editingGatewayId
+                ? { ...g, ...gatewayForm, name, baseUrl: baseUrlTrimmed }
+                : g));
+        } else {
+            persistUserGateways([...userGateways, createUserGateway({ ...gatewayForm, name, baseUrl: baseUrlTrimmed })]);
+        }
+        setGatewayEditorOpen(false);
+    };
+
+    const deleteUserGateway = (id: string) => {
+        persistUserGateways(userGateways.filter(g => g.id !== id));
+        if (providerId === id) handleSelectProvider('custom');
+    };
     
     // Querying states
     const [querying, setQuerying] = useState(false);
@@ -136,6 +204,7 @@ export const ApiKeyFun: React.FC = () => {
     const runQuery = useCallback(async (keyToQuery: string, urlToQuery: string) => {
         const key = keyToQuery.trim();
         const endpoint = urlToQuery.trim().replace(/\/+$/, '');
+        const provider = getProvider(inferProviderId(endpoint, userGateways), userGateways);
         const seq = ++querySeqRef.current;
         if (!key) {
             setQuerying(false);
@@ -176,70 +245,11 @@ export const ApiKeyFun: React.FC = () => {
             setModels(fetchedModels);
             setModelsSource({ key, endpoint });
 
-            // 2. Fetch balance (Try sub2api /usage first, then New API billing)
-            let usageSummary: UsageSummary | null = null;
-            
-            try {
-                const usageText = await request<string>('query_transit_info', {
-                    url: `${endpoint}/usage`,
-                    key
-                });
-                const data = JSON.parse(usageText);
-                
-                const unit = data.unit || data.quota?.unit || 'USD';
-                const remaining = typeof data.remaining === 'number' ? data.remaining.toFixed(2) : 
-                                  typeof data.balance === 'number' ? data.balance.toFixed(2) : '--';
-                const usedRaw = data.quota?.used ?? data.usage?.total?.actual_cost ?? data.usage?.total?.cost;
-                const used = typeof usedRaw === 'number' ? usedRaw.toFixed(2) : '--';
-                
-                usageSummary = {
-                    remaining: remaining !== '--' ? (unit === 'USD' ? `$${remaining}` : `${remaining} ${unit}`) : '--',
-                    used: used !== '--' ? (unit === 'USD' ? `$${used}` : `${used} ${unit}`) : '--',
-                    todayRequests: String(data.usage?.today?.requests ?? '--'),
-                    todayTokens: String(data.usage?.today?.total_tokens ?? '--'),
-                    totalRequests: String(data.usage?.total?.requests ?? '--'),
-                    totalTokens: String(data.usage?.total?.total_tokens ?? '--'),
-                    unit,
-                    isValid: data.is_active ?? data.isValid ?? true
-                };
-            } catch (e) {
-                console.log('Skipping sub2api endpoint, trying standard billing endpoints...', e);
-            }
-
-            // Fallback to standard One-API / New-API dashboard billing
-            if (!usageSummary) {
-                try {
-                    const subText = await request<string>('query_transit_info', {
-                        url: `${endpoint}/dashboard/billing/subscription`,
-                        key
-                    });
-                    const subData = JSON.parse(subText);
-                    
-                    const start = new Date(Date.now() - 100 * 24 * 3600 * 1000).toISOString().split('T')[0];
-                    const end = new Date(Date.now() + 24 * 3600 * 1000).toISOString().split('T')[0];
-                    const usageText = await request<string>('query_transit_info', {
-                        url: `${endpoint}/dashboard/billing/usage?start_date=${start}&end_date=${end}`,
-                        key
-                    });
-                    const usageData = JSON.parse(usageText);
-                    
-                    const totalUsageUSD = (usageData.total_usage ?? 0) / 100;
-                    const limitUSD = subData.hard_limit_usd ?? 0;
-                    const remainingUSD = (limitUSD - totalUsageUSD).toFixed(4);
-                    
-                    usageSummary = {
-                        remaining: `$${remainingUSD}`,
-                        used: `$${totalUsageUSD.toFixed(4)}`,
-                        todayRequests: '--',
-                        todayTokens: '--',
-                        totalRequests: '--',
-                        totalTokens: '--',
-                        unit: 'USD',
-                        isValid: true
-                    };
-                } catch (billingErr) {
-                    console.log('Billing query failed', billingErr);
-                }
+            // 2. Fetch balance via the selected provider's adapter
+            let usageSummary = await fetchBalanceSummary(provider.balanceKind, endpoint, key, transitQuery);
+            if (!usageSummary && fetchedModels.length > 0) {
+                // Models came back, so the key works — degrade balance to '--' instead of failing.
+                usageSummary = emptyUsageSummary();
             }
 
             if (seq !== querySeqRef.current) return;
@@ -258,6 +268,7 @@ export const ApiKeyFun: React.FC = () => {
                             lastStatus: 'ok',
                             lastUsedAt: now,
                             baseUrl: endpoint, // optionally update baseUrl
+                            providerId: provider.id,
                             models: fetchedModels.length > 0 ? fetchedModels
                                 : updated[existingIndex].baseUrl === endpoint ? updated[existingIndex].models : undefined
                         };
@@ -269,6 +280,7 @@ export const ApiKeyFun: React.FC = () => {
                             key,
                             name: maskKey(key),
                             baseUrl: endpoint,
+                            providerId: provider.id,
                             createdAt: now,
                             lastUsedAt: now,
                             lastStatus: 'ok',
@@ -295,6 +307,7 @@ export const ApiKeyFun: React.FC = () => {
                         lastStatus: 'bad',
                         lastUsedAt: now,
                         baseUrl: endpoint,
+                        providerId: provider.id,
                         models: fetchedModels.length > 0 ? fetchedModels
                             : updated[existingIndex].baseUrl === endpoint ? updated[existingIndex].models : undefined
                     };
@@ -305,6 +318,7 @@ export const ApiKeyFun: React.FC = () => {
                         key,
                         name: maskKey(key),
                         baseUrl: endpoint,
+                        providerId: provider.id,
                         createdAt: now,
                         lastUsedAt: now,
                         lastStatus: 'bad',
@@ -317,7 +331,7 @@ export const ApiKeyFun: React.FC = () => {
                 setQuerying(false);
             }
         }
-    }, [t]);
+    }, [t, userGateways]);
 
     // Load first key on mount and automatically run query
     useEffect(() => {
@@ -326,6 +340,7 @@ export const ApiKeyFun: React.FC = () => {
             if (managedKeys.length > 0) {
                 const initialKey = managedKeys[0].key;
                 const initialUrl = managedKeys[0].baseUrl || DEFAULT_ENDPOINT;
+                setProviderId(inferProviderId(initialUrl, userGateways));
                 setApiKey(initialKey);
                 setBaseUrl(initialUrl);
                 if (managedKeys[0].models && managedKeys[0].models.length > 0) {
@@ -342,7 +357,8 @@ export const ApiKeyFun: React.FC = () => {
         const rawKey = apiKey.trim();
         const cleanUrl = baseUrl.trim().replace(/\/+$/, '');
         const baseWithoutV1 = cleanUrl.replace(/\/v1$/i, '');
-        const proxyUrl = app === 'Codex' ? `${baseWithoutV1}/v1` : baseWithoutV1;
+        const claudeUrl = (activeProvider.claudeBaseUrl || baseUrl).trim().replace(/\/+$/, '');
+        const proxyUrl = app === 'Codex' ? `${baseWithoutV1}/v1` : claudeUrl;
         const syncKey = rawKey;
 
         try {
@@ -373,8 +389,38 @@ export const ApiKeyFun: React.FC = () => {
         return undefined;
     }, [modelsSource, models, managedKeys]);
 
-    const profileInfo = useCallback((key: string, url: string, modelIds?: string[]) =>
-        getProfileInfo(opencodeProviders, key, url, modelIds), [opencodeProviders]);
+    const [manualModelInput, setManualModelInput] = useState('');
+
+    const persistModelsForKey = (next: string[]) => {
+        const trimmed = apiKey.trim();
+        if (!trimmed) return;
+        setManagedKeys(prev => prev.map(item =>
+            item.key.trim() === trimmed
+                ? { ...item, models: next.length > 0 ? next : undefined }
+                : item
+        ));
+    };
+
+    const addManualModel = () => {
+        const id = manualModelInput.trim();
+        if (!id || models.includes(id)) { setManualModelInput(''); return; }
+        const next = [...models, id];
+        setModels(next);
+        persistModelsForKey(next);
+        setManualModelInput('');
+    };
+
+    const removeModel = (id: string) => {
+        const next = models.filter(m => m !== id);
+        setModels(next);
+        persistModelsForKey(next);
+    };
+
+    const profileInfo = useCallback((key: string, url: string, modelIds?: string[]) => {
+        const id = inferProviderId(url, userGateways);
+        const p = getProvider(id, userGateways);
+        return getProfileInfo(opencodeProviders, key, url, modelIds, { id, name: p.name });
+    }, [opencodeProviders, userGateways]);
 
     const handleToggleOpenCodeProfile = async (targetKey: string, targetUrl: string, explicitModels?: string[]) => {
         const trimmedKey = targetKey.trim();
@@ -383,9 +429,13 @@ export const ApiKeyFun: React.FC = () => {
         setSyncingKey(trimmedKey);
 
         try {
-            const keyModels = explicitModels ?? getModelsForKey(trimmedKey, targetUrl);
-            const providers = await fetchOpencodeProviders();
-            const info = getProfileInfo(providers, trimmedKey, targetUrl, keyModels);
+                const keyModels = explicitModels ?? getModelsForKey(trimmedKey, targetUrl);
+                const providers = await fetchOpencodeProviders();
+                const providerIdForUrl = inferProviderId(targetUrl, userGateways);
+                const info = getProfileInfo(providers, trimmedKey, targetUrl, keyModels, {
+                    id: providerIdForUrl,
+                    name: getProvider(providerIdForUrl, userGateways).name,
+                });
             if (info.status === 'synced') {
                 // Deactivate / remove profile
                 await request('execute_opencode_remove_provider', {
@@ -459,6 +509,7 @@ export const ApiKeyFun: React.FC = () => {
 
     const handleSelectKey = (item: ManagedApiKey) => {
         setApiKey(item.key);
+        setProviderId(inferProviderId(item.baseUrl || DEFAULT_ENDPOINT, userGateways));
         setBaseUrl(item.baseUrl || DEFAULT_ENDPOINT);
         if (item.models && item.models.length > 0) {
             setModels(item.models);
@@ -493,27 +544,89 @@ export const ApiKeyFun: React.FC = () => {
                     <div className="flex flex-col gap-1.5 max-w-4xl">
                         <div className="flex flex-col md:flex-row items-center md:items-end gap-3">
                             <h1 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white tracking-wide leading-none">
-                                {t('apiKeyFun.title', { defaultValue: 'APIKEY.FUN 中转站' })}
+                                {t('apiKeyFun.hub.title', { defaultValue: 'Gateway Hub' })}
                             </h1>
                             <span className="bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300 border border-blue-200 dark:border-blue-800/40 px-2.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide uppercase">
-                                {t('apiKeyFun.eyebrow', { defaultValue: '中转站' })}
+                                {t('apiKeyFun.hub.eyebrow', { defaultValue: 'Transit Station' })}
                             </span>
                         </div>
                         <p className="text-xs md:text-sm text-gray-600 dark:text-gray-300/90 leading-relaxed font-normal mt-1">
-                            {t('apiKeyFun.description', { defaultValue: 'Antigravity Tools 官方合作中转站，为用户提供稳定、开放、高性价比的大模型 API 接入服务。支持 Claude、OpenAI、Gemini 等主流模型，适合在 Codex、Gemini CLI、Claude Code 及其他开发工具中统一配置使用。通过 Antigravity Tools 专属链接注册，可享受最高充值永久 95 折优惠。' })}
+                            {providerId === 'apikey-fun'
+                                ? t('apiKeyFun.description', { defaultValue: 'Antigravity Tools 官方合作中转站，为用户提供稳定、开放、高性价比的大模型 API 接入服务。支持 Claude、OpenAI、Gemini 等主流模型，适合在 Codex、Gemini CLI、Claude Code 及其他开发工具中统一配置使用。通过 Antigravity Tools 专属链接注册，可享受最高充值永久 95 折优惠。' })
+                                : t('apiKeyFun.hub.description', { defaultValue: 'Query balance, browse models, and sync any OpenAI-compatible gateway API key into your local CLI tools (Codex, Claude Code, OpenCode).' })}
                         </p>
                     </div>
                 </div>
 
-                <a
-                    href="https://apikey.fan/register?aff=AntManager"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="bg-white hover:bg-blue-50 dark:bg-base-200 dark:hover:bg-base-300 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50 px-6 py-3 rounded-xl font-bold text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-500/10 dark:shadow-none flex-shrink-0 hover:scale-[1.02] active:scale-[0.98] duration-200 z-10"
-                >
-                    <ExternalLink size={16} className="text-blue-500 dark:text-blue-400" />
-                    <span>{t('apiKeyFun.viewNow', { defaultValue: '立即查看' })}</span>
-                </a>
+                {activeProvider.website && (
+                    <a
+                        href={activeProvider.website}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="bg-white hover:bg-blue-50 dark:bg-base-200 dark:hover:bg-base-300 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50 px-6 py-3 rounded-xl font-bold text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-500/10 dark:shadow-none flex-shrink-0 hover:scale-[1.02] active:scale-[0.98] duration-200 z-10"
+                    >
+                        <ExternalLink size={16} className="text-blue-500 dark:text-blue-400" />
+                        <span>{t('apiKeyFun.viewNow', { defaultValue: '立即查看' })}</span>
+                    </a>
+                )}
+            </div>
+
+            {/* Gateway Selector */}
+            <div className="bg-white dark:bg-base-100 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-base-200">
+                <h2 className="text-sm font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                    <Layers size={15} className="text-blue-500" />
+                    {t('apiKeyFun.gateway.selectLabel', { defaultValue: 'Gateway' })}
+                </h2>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[...TRANSIT_PROVIDERS, ...userGateways].map(p => (
+                        <div
+                            key={p.id}
+                            className={`relative flex items-center gap-3 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                                providerId === p.id
+                                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-500/10 ring-2 ring-blue-500/20'
+                                    : 'border-gray-200 dark:border-base-300 hover:border-blue-300 dark:hover:border-blue-700 bg-gray-50/50 dark:bg-base-200/50'
+                            }`}
+                            onClick={() => handleSelectProvider(p.id)}
+                        >
+                            {p.userDefined && (
+                                <span className="absolute top-1.5 right-1.5 flex items-center gap-1">
+                                    <button
+                                        onClick={e => { e.stopPropagation(); openGatewayEditor(p); }}
+                                        className="text-gray-400 hover:text-blue-500 transition-colors"
+                                        title={t('apiKeyFun.gateway.editTitle', { defaultValue: 'Edit gateway' })}
+                                    >
+                                        <Pencil size={12} />
+                                    </button>
+                                    <button
+                                        onClick={e => { e.stopPropagation(); deleteUserGateway(p.id); }}
+                                        className="text-gray-400 hover:text-red-500 transition-colors"
+                                        title={t('apiKeyFun.gateway.delete', { defaultValue: 'Delete gateway' })}
+                                    >
+                                        <Trash2 size={12} />
+                                    </button>
+                                </span>
+                            )}
+                            <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-white dark:bg-base-100 border border-gray-100 dark:border-base-300 shrink-0">
+                                {p.icon}
+                            </span>
+                            <span className="flex flex-col min-w-0 pr-4">
+                                <span className="text-sm font-semibold text-gray-900 dark:text-white truncate">{p.name}</span>
+                                <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
+                                    {p.userDefined
+                                        ? (p.baseUrl || t('apiKeyFun.gateway.custom.tagline', { defaultValue: 'Any OpenAI-compatible endpoint' }))
+                                        : t(`apiKeyFun.gateway.${p.id}.tagline`, { defaultValue: p.baseUrl || 'Any OpenAI-compatible endpoint' })}
+                                </span>
+                            </span>
+                        </div>
+                    ))}
+                    <button
+                        onClick={() => openGatewayEditor(undefined)}
+                        className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-gray-300 dark:border-base-300 text-gray-500 dark:text-gray-400 hover:border-blue-400 hover:text-blue-500 transition-all text-sm font-medium"
+                    >
+                        <Plus size={16} />
+                        {t('apiKeyFun.gateway.addTitle', { defaultValue: 'Add gateway' })}
+                    </button>
+                </div>
             </div>
 
             {/* Stats Grid - Full Width Dashboard Metrics */}
@@ -676,9 +789,14 @@ export const ApiKeyFun: React.FC = () => {
                                                     onClick={e => e.stopPropagation()}
                                                 />
                                             ) : (
-                                                <button type="button" className="text-left font-bold text-[13px] text-slate-800 dark:text-gray-200 truncate">
-                                                    {item.name}
-                                                </button>
+                                                <span className="flex items-center gap-1.5 min-w-0">
+                                                    <button type="button" className="text-left font-bold text-[13px] text-slate-800 dark:text-gray-200 truncate">
+                                                        {item.name}
+                                                    </button>
+                                                    <span className="badge badge-ghost badge-xs text-[9px] font-medium py-1 shrink-0">
+                                                        {getProvider(item.providerId || inferProviderId(item.baseUrl, userGateways), userGateways).name}
+                                                    </span>
+                                                </span>
                                             )}
 
                                             <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-gray-400 font-medium">
@@ -906,7 +1024,7 @@ export const ApiKeyFun: React.FC = () => {
                                     
                                     // 默认都显示，除非明确检测到只支持其中一种
                                     const showCodex = !hasModels || hasGpt || (!hasGpt && !hasClaude);
-                                    const showClaude = !hasModels || hasClaude || (!hasGpt && !hasClaude);
+                                    const showClaude = activeProvider.claudeCompatible && (!hasModels || hasClaude || (!hasGpt && !hasClaude));
 
                                     return (
                                         <div className="flex items-center gap-2 w-full sm:w-auto z-10 pl-11 sm:pl-0">
@@ -922,7 +1040,7 @@ export const ApiKeyFun: React.FC = () => {
                                                 </button>
                                             )}
                                             {showClaude && (
-                                                <button 
+                                                <button
                                                     onClick={() => handleSyncCli('Claude')}
                                                     className="flex-1 sm:flex-none btn btn-sm px-5 font-medium rounded-full bg-purple-500 hover:bg-purple-600 text-white border-none shadow-md shadow-purple-500/20 transition-all group"
                                                     disabled={!apiKey.trim()}
@@ -931,6 +1049,14 @@ export const ApiKeyFun: React.FC = () => {
                                                     <Cpu size={14} className="mr-1.5 opacity-90 group-hover:scale-110 group-hover:opacity-100 transition-all" />
                                                     Claude
                                                 </button>
+                                            )}
+                                            {!activeProvider.claudeCompatible && (
+                                                <span
+                                                    className="text-[10px] text-base-content/50 font-medium self-center px-2"
+                                                    title={t('apiKeyFun.gateway.claudeUnavailable', { defaultValue: 'No Anthropic-compatible endpoint for this gateway' })}
+                                                >
+                                                    {t('apiKeyFun.gateway.claudeUnavailableShort', { defaultValue: 'Claude Code: N/A' })}
+                                                </span>
                                             )}
                                             {(() => {
                                                 const activeModels = getModelsForKey(apiKey, baseUrl);
@@ -1011,18 +1137,82 @@ export const ApiKeyFun: React.FC = () => {
                                        : t('apiKeyFun.models.empty', { defaultValue: 'Enter key and query to load available models.' })}
                             </p>
                         ) : (
-                            <div className="flex flex-wrap gap-1.5 max-h-[400px] overflow-y-auto pt-2">
-                                {models.map(m => (
-                                    <span key={m} className="px-2.5 py-1 bg-gray-50 dark:bg-base-200 text-gray-700 dark:text-gray-300 text-xs rounded-md border border-gray-200 dark:border-base-300 font-mono hover:bg-gray-100 dark:hover:bg-base-300 transition-colors shadow-sm cursor-default">
-                                        {m}
-                                    </span>
-                                ))}
+                            <div className="flex flex-col gap-3">
+                                <div className="flex flex-wrap gap-1.5 max-h-[400px] overflow-y-auto pt-2">
+                                    {models.map(m => (
+                                        <span key={m} className="group inline-flex items-center gap-1 px-2.5 py-1 bg-gray-50 dark:bg-base-200 text-gray-700 dark:text-gray-300 text-xs rounded-md border border-gray-200 dark:border-base-300 font-mono hover:bg-gray-100 dark:hover:bg-base-300 transition-colors shadow-sm">
+                                            {m}
+                                            <button
+                                                onClick={() => removeModel(m)}
+                                                className="text-gray-300 dark:text-gray-600 hover:text-red-500 transition-colors"
+                                                title={t('apiKeyFun.models.remove', { defaultValue: 'Remove' })}
+                                            >
+                                                <X size={11} strokeWidth={2.5} />
+                                            </button>
+                                        </span>
+                                    ))}
+                                </div>
+                                <div className="flex gap-2">
+                                    <input
+                                        className="input input-sm flex-1 font-mono text-xs bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg focus:border-blue-500 outline-none text-gray-800 dark:text-gray-200 placeholder-slate-400"
+                                        placeholder={t('apiKeyFun.models.addPlaceholder', { defaultValue: 'Add model id manually (e.g. deepseek-reasoner)' })}
+                                        value={manualModelInput}
+                                        onChange={e => setManualModelInput(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') addManualModel(); }}
+                                    />
+                                    <button className="btn btn-sm bg-blue-500 hover:bg-blue-600 text-white border-none rounded-lg" onClick={addManualModel}>
+                                        {t('apiKeyFun.models.addButton', { defaultValue: 'Add' })}
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>
                 </div>
 
             </div>
+
+            {/* Gateway Editor Modal */}
+            {gatewayEditorOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setGatewayEditorOpen(false)}>
+                    <div className="bg-white dark:bg-base-100 rounded-2xl shadow-xl border border-gray-100 dark:border-base-300 w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-base font-bold text-gray-900 dark:text-white mb-4">
+                            {editingGatewayId
+                                ? t('apiKeyFun.gateway.editTitle', { defaultValue: 'Edit gateway' })
+                                : t('apiKeyFun.gateway.addTitle', { defaultValue: 'Add gateway' })}
+                        </h3>
+                        <div className="flex flex-col gap-3">
+                            <div className="form-control">
+                                <label className="label mb-1"><span className="label-text font-bold text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.nameLabel', { defaultValue: 'Name' })} <span className="text-red-500">*</span></span></label>
+                                <input className="input input-sm w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg" value={gatewayForm.name}
+                                    onChange={e => setGatewayForm(f => ({ ...f, name: e.target.value }))} />
+                            </div>
+                            <div className="form-control">
+                                <label className="label mb-1"><span className="label-text font-bold text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.baseUrlLabel', { defaultValue: 'Base URL' })} <span className="text-red-500">*</span></span></label>
+                                <input className="input input-sm w-full font-mono text-xs bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg" placeholder="https://api.example.com/v1" value={gatewayForm.baseUrl}
+                                    onChange={e => setGatewayForm(f => ({ ...f, baseUrl: e.target.value }))} />
+                            </div>
+                            <div className="form-control">
+                                <label className="label mb-1"><span className="label-text font-bold text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.balanceKindLabel', { defaultValue: 'Balance query type' })}</span></label>
+                                <select className="select select-sm w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg" value={gatewayForm.balanceKind}
+                                    onChange={e => setGatewayForm(f => ({ ...f, balanceKind: e.target.value as UserGatewayInput['balanceKind'] }))}>
+                                    <option value="sub2api-auto">{t('apiKeyFun.gateway.balance.sub2api', { defaultValue: 'Auto (relay /usage → dashboard billing)' })}</option>
+                                    <option value="openrouter-credits">{t('apiKeyFun.gateway.balance.openrouter', { defaultValue: 'OpenRouter-style /credits' })}</option>
+                                    <option value="deepseek-balance">{t('apiKeyFun.gateway.balance.deepseek', { defaultValue: 'DeepSeek-style /user/balance' })}</option>
+                                </select>
+                            </div>
+                            <label className="label cursor-pointer justify-start gap-3 py-1">
+                                <input type="checkbox" className="checkbox checkbox-sm checkbox-primary" checked={gatewayForm.claudeCompatible}
+                                    onChange={e => setGatewayForm(f => ({ ...f, claudeCompatible: e.target.checked }))} />
+                                <span className="label-text text-sm text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.claudeCompatLabel', { defaultValue: 'Anthropic-compatible (Claude Code sync)' })}</span>
+                            </label>
+                            <div className="flex justify-end gap-2 mt-2">
+                                <button className="btn btn-sm btn-ghost" onClick={() => setGatewayEditorOpen(false)}>{t('common.cancel') || 'Cancel'}</button>
+                                <button className="btn btn-sm bg-blue-500 hover:bg-blue-600 text-white border-none" onClick={saveGatewayEditor}>{t('common.save') || 'Save'}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </motion.div>
     );
 };
