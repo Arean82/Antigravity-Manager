@@ -1677,6 +1677,33 @@
     "eyebrow": "Hub",
     "description": "The official Antigravity Tools API Hub, providing stable, open, and cost-effective large model API services. Supports mainstream models like Claude, OpenAI, and Gemini. Ideal for unified configuration in Codex, Gemini CLI, Claude Code, and other development tools.",
     "viewNow": "View Now",
+    "hub": {
+      "title": "Gateway Hub",
+      "eyebrow": "Transit Station",
+      "description": "Query balance, browse models, and sync any OpenAI-compatible gateway API key into your local CLI tools (Codex, Claude Code, OpenCode)."
+    },
+    "gateway": {
+      "selectLabel": "Gateway",
+      "apikey-fun": { "tagline": "Official partner relay with balance dashboard" },
+      "openrouter": { "tagline": "Unified access to hundreds of models" },
+      "deepseek": { "tagline": "Official DeepSeek API, Claude Code compatible" },
+      "custom": { "tagline": "Any OpenAI-compatible endpoint" },
+      "addTitle": "Add gateway",
+      "editTitle": "Edit gateway",
+      "delete": "Delete gateway",
+      "nameLabel": "Name",
+      "baseUrlLabel": "Base URL",
+      "balanceKindLabel": "Balance query type",
+      "balance": {
+        "sub2api": "Auto (relay /usage → dashboard billing)",
+        "openrouter": "OpenRouter-style /credits",
+        "deepseek": "DeepSeek-style /user/balance"
+      },
+      "claudeCompatLabel": "Anthropic-compatible (Claude Code sync)",
+      "formIncomplete": "Name and Base URL are required",
+      "claudeUnavailable": "This gateway has no Anthropic-compatible endpoint, so Claude Code sync is unavailable.",
+      "claudeUnavailableShort": "Claude Code: N/A"
+    },
     "usage": {
       "remainingAmount": "Remaining",
       "usedAmount": "Used",
@@ -1708,7 +1735,10 @@
     "models": {
       "title": "Available Models",
       "empty": "Enter key and query to load available models.",
-      "emptyFromKey": "No models returned yet. Query to fetch models."
+      "emptyFromKey": "No models returned yet. Query to fetch models.",
+      "addPlaceholder": "Add model id manually (e.g. deepseek-reasoner)",
+      "addButton": "Add",
+      "remove": "Remove"
     },
     "errors": {
       "parseFormat": "Parse format error: {{err}}",

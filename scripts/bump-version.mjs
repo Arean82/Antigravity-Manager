@@ -248,8 +248,8 @@ const TARGET_FILES = [
             .replace(`Version-${currentVersion}-blue`, `Version-${newVersion}-blue`),
     },
     {
-        name: 'README_EN.md (标题与徽章)',
-        relPath: 'README_EN.md',
+        name: 'README_CN.md (标题与徽章)',
+        relPath: 'README_CN.md',
         stableOnly: true,
         replace: (content) => content
             .replace(`(v${currentVersion})`, `(v${newVersion})`)

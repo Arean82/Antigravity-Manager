@@ -1643,6 +1643,33 @@
     "eyebrow": "中转站",
     "description": "Antigravity Tools 官方合作中转站，为用户提供稳定、开放、高性价比的大模型 API 接入服务。支持 Claude、OpenAI、Gemini 等主流模型，适合在 Codex、Gemini CLI、Claude Code 及其他开发工具中统一配置使用。通过 Antigravity Tools 专属链接注册，可享受最高充值永久 95 折优惠。",
     "viewNow": "立即查看",
+    "hub": {
+      "title": "网关中心",
+      "eyebrow": "中转站",
+      "description": "查询余额、浏览模型，并将任意 OpenAI 兼容网关的 API Key 一键同步到本地开发工具（Codex、Claude Code、OpenCode）。"
+    },
+    "gateway": {
+      "selectLabel": "网关",
+      "apikey-fun": { "tagline": "官方合作中转站，支持余额看板" },
+      "openrouter": { "tagline": "聚合数百款模型的统一入口" },
+      "deepseek": { "tagline": "DeepSeek 官方 API，兼容 Claude Code" },
+      "custom": { "tagline": "任意 OpenAI 兼容接口" },
+      "addTitle": "添加网关",
+      "editTitle": "编辑网关",
+      "delete": "删除网关",
+      "nameLabel": "名称",
+      "baseUrlLabel": "接口地址",
+      "balanceKindLabel": "余额查询方式",
+      "balance": {
+        "sub2api": "自动（中转 /usage → 计费看板）",
+        "openrouter": "OpenRouter 式 /credits",
+        "deepseek": "DeepSeek 式 /user/balance"
+      },
+      "claudeCompatLabel": "兼容 Anthropic 协议（可同步 Claude Code）",
+      "formIncomplete": "名称和接口地址为必填项",
+      "claudeUnavailable": "该网关没有 Anthropic 兼容端点，无法同步 Claude Code。",
+      "claudeUnavailableShort": "Claude Code：不可用"
+    },
     "usage": {
       "remainingAmount": "剩余额度",
       "usedAmount": "已用额度",
@@ -1674,7 +1701,10 @@
     "models": {
       "title": "可用模型",
       "empty": "输入 API Key 并查询以获取可用模型列表。",
-      "emptyFromKey": "暂未获取到模型。请点击刷新以获取模型列表。"
+      "emptyFromKey": "暂未获取到模型。请点击刷新以获取模型列表。",
+      "addPlaceholder": "手动添加模型 ID（如 deepseek-reasoner）",
+      "addButton": "添加",
+      "remove": "移除"
     },
     "errors": {
       "parseFormat": "解析格式异常: {{err}}",
