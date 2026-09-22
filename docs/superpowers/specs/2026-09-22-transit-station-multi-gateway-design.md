@@ -25,9 +25,20 @@ listing, and CLI sync options adapt to the selection.
   remains the z.ai Anthropic provider).
 - User-defined persistent gateway entries in the picker (registry shape allows
   adding this later; not in this round).
-- Any Rust/backend changes.
 - A frontend test framework (the repo has none; parsers are kept pure for
   future testing).
+
+## Backend Change (single, small)
+
+`query_transit_info`, `execute_cli_sync`, and `execute_opencode_openai_sync`
+are already generic and parameterized — no new commands needed. The one Rust
+edit generalizes the key-ownership guard in
+`src-tauri/src/proxy/opencode_sync.rs` (~line 1653): today it only protects
+provider ids starting with `apikey-fun-` from being overwritten by a different
+API key; it must apply to every provider id this app manages
+(`openrouter-*`, `deepseek-*`, `custom-*`), otherwise multi-gateway profiles
+lose that protection. The guard logic itself (compare stored `options.apiKey`
+with the incoming key) is unchanged and safe to apply universally.
 
 ## Provider Registry
 
@@ -74,8 +85,13 @@ and self-hosted gateways keep working under a preset's balance adapter.
    `baseUrl` (DeepSeek), the sync passes the Claude-specific URL to
    `execute_cli_sync`.
 4. **Codex / OpenCode sync**: unchanged behavior, works for all presets
-   (commands already accept arbitrary `proxyUrl` + `apiKey`). The OpenCode
-   provider display name follows the selected gateway name.
+   (commands already accept arbitrary `proxyUrl` + `apiKey`). OpenCode
+   profiles become provider-aware: `getProfileInfo` (`src/utils/opencodeProfiles.ts`)
+   derives the profile id as `{providerId}-{keyHashSuffix}` (e.g.
+   `openrouter-a1b2c3`) and the display name from the selected gateway.
+   Legacy matching is kept: existing `apikey-fun-*` (and bare `apikey-fun`)
+   profiles whose API key matches still resolve as the same profile, so
+   previously synced APIKEY.FUN keys show "Active" instead of duplicating.
 5. **Editable models list**: the per-key models list auto-populates from
    `GET {base}/models` after a query (all presets support it). The user can
    additionally add model IDs manually (input + Add) and remove entries
@@ -129,7 +145,9 @@ presets).
   balance render per provider, models list, key badge, Codex/OpenCode sync,
   Claude Code button visibility (OpenRouter hidden, DeepSeek uses
   `/anthropic`), legacy keys still queryable.
-- No Rust changes → cargo pre-flight unaffected (CI runs it regardless).
+- Rust guard change → run `cargo fmt -- --check`, `cargo clippy
+  --all-targets --all-features`, `cargo check` on the touched crate (CI gates
+  these on main/PRs anyway).
 
 ## Risks
 
