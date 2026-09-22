@@ -112,7 +112,13 @@ export interface OpencodeProviderSummary {
 
 export type ProfileSyncStatus = 'not_present' | 'partial' | 'synced';
 
-export function getProfileInfo(opencodeProviders: OpencodeProviderSummary[], keyToCheck: string, urlToCheck: string, modelsToCheck?: string[]) {
+export function getProfileInfo(
+    opencodeProviders: OpencodeProviderSummary[],
+    keyToCheck: string,
+    urlToCheck: string,
+    modelsToCheck?: string[],
+    provider?: { id: string; name: string },
+) {
     const trimmedKey = keyToCheck.trim();
     if (!trimmedKey) {
         return {
@@ -123,18 +129,22 @@ export function getProfileInfo(opencodeProviders: OpencodeProviderSummary[], key
             existing: undefined
         };
     }
+    const providerPrefix = provider?.id?.trim() || 'apikey-fun';
+    const providerDisplay = provider?.name?.trim() || 'APIKEY.FUN';
     const suffix = getKeyHashSuffix(trimmedKey);
-    const shortId = `apikey-fun-${suffix}`;
-    const fullId = `apikey-fun-${sha256Hex(trimmedKey)}`;
+    const shortId = `${providerPrefix}-${suffix}`;
+    const fullId = `${providerPrefix}-${sha256Hex(trimmedKey)}`;
     // A 24-bit suffix can collide. Never overwrite a different key's profile.
     const shortProfile = opencodeProviders.find(p => p.id === shortId);
     const providerId = shortProfile && shortProfile.apiKey?.trim() !== trimmedKey ? fullId : shortId;
-    const providerName = `APIKEY.FUN (${suffix})`;
+    const providerName = `${providerDisplay} (${suffix})`;
 
-    // Match either by suffixed id or legacy 'apikey-fun' if apiKey matches
+    // Match either by suffixed id, or the legacy bare 'apikey-fun' for that provider
     const existing = opencodeProviders.find(p => p.id === fullId && p.apiKey?.trim() === trimmedKey)
         ?? opencodeProviders.find(p => p.id === providerId && p.apiKey?.trim() === trimmedKey)
-        ?? opencodeProviders.find(p => p.id === 'apikey-fun' && p.apiKey?.trim() === trimmedKey);
+        ?? (providerPrefix === 'apikey-fun'
+            ? opencodeProviders.find(p => p.id === 'apikey-fun' && p.apiKey?.trim() === trimmedKey)
+            : undefined);
 
     if (!existing) {
         return {
