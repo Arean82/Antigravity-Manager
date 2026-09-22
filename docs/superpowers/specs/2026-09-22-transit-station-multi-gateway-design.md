@@ -59,6 +59,11 @@ export interface TransitProvider {
 }
 ```
 
+**Provider icons**: each preset renders a brand icon in the selector card and
+the key badges. Source: `@lobehub/icons` (already a dependency) for OpenRouter
+and DeepSeek; the existing `docs/images/APIKEYFUN.png` asset for APIKEY.FUN;
+lucide `Globe` for Custom. No new dependencies.
+
 | Preset | Base URL | Balance | Claude Code |
 |---|---|---|---|
 | APIKEY.FUN | `https://api.apikey.fan/v1` | `sub2api-auto` (existing chain, unchanged) | yes |
