@@ -29,7 +29,7 @@
 - Create: `public/providers/apikeyfun.png` (copy of `docs/images/APIKEYFUN.png`)
 
 **Interfaces:**
-- Produces: `TransitProvider`, `BalanceKind`, `TRANSIT_PROVIDERS: TransitProvider[]`, `getProvider(id?: string): TransitProvider`, `inferProviderId(baseUrl: string): string` — consumed by Tasks 2, 3, 5.
+- Produces: `TransitProvider`, `BalanceKind`, `TRANSIT_PROVIDERS: TransitProvider[]`, `getProvider(id?: string, userGateways?: TransitProvider[]): TransitProvider`, `inferProviderId(baseUrl: string, userGateways?: TransitProvider[]): string`, `loadUserGateways(): TransitProvider[]`, `saveUserGateways(gateways: TransitProvider[]): void`, `createUserGateway(input: UserGatewayInput): TransitProvider`, `UserGatewayInput` — consumed by Tasks 2, 3, 5.
 
 - [ ] **Step 1: Copy the APIKEY.FUN logo into public assets**
 
@@ -57,6 +57,8 @@ export interface TransitProvider {
     /** Anthropic-compatible base URL when it differs from baseUrl. */
     claudeBaseUrl?: string;
     website?: string;
+    /** True for user-defined gateway entries (editable/deletable in the picker). */
+    userDefined?: boolean;
     icon: ReactNode;
 }
 
@@ -99,15 +101,70 @@ export const TRANSIT_PROVIDERS: TransitProvider[] = [
     },
 ];
 
-export function getProvider(id: string | undefined): TransitProvider {
-    return TRANSIT_PROVIDERS.find(p => p.id === id) ?? TRANSIT_PROVIDERS[TRANSIT_PROVIDERS.length - 1];
+const USER_GATEWAYS_KEY = 'transit_user_gateways_local';
+const BALANCE_KINDS: BalanceKind[] = ['sub2api-auto', 'openrouter-credits', 'deepseek-balance'];
+
+export interface UserGatewayInput {
+    name: string;
+    baseUrl: string;
+    balanceKind: BalanceKind;
+    claudeCompatible: boolean;
+    claudeBaseUrl?: string;
+    website?: string;
 }
 
-export function inferProviderId(baseUrl: string): string {
-    const u = (baseUrl || '').trim().toLowerCase();
-    if (u.includes('apikey.fan') || u.includes('apikey.fun')) return 'apikey-fun';
-    if (u.includes('openrouter.ai')) return 'openrouter';
-    if (u.includes('deepseek.com')) return 'deepseek';
+function normalizeBaseUrl(url: string): string {
+    return (url || '').trim().toLowerCase().replace(/\/+$/, '');
+}
+
+export function loadUserGateways(): TransitProvider[] {
+    try {
+        const raw = localStorage.getItem(USER_GATEWAYS_KEY);
+        if (!raw) return [];
+        const list = JSON.parse(raw);
+        if (!Array.isArray(list)) return [];
+        return list
+            .filter((g: any) => typeof g?.id === 'string' && g.id.startsWith('user-') && typeof g?.baseUrl === 'string' && g.baseUrl.trim() !== '')
+            .map((g: any): TransitProvider => ({
+                id: g.id,
+                name: String(g.name || 'Gateway').slice(0, 40),
+                baseUrl: g.baseUrl,
+                balanceKind: BALANCE_KINDS.includes(g.balanceKind) ? g.balanceKind : 'sub2api-auto',
+                claudeCompatible: Boolean(g.claudeCompatible),
+                claudeBaseUrl: typeof g.claudeBaseUrl === 'string' && g.claudeBaseUrl.trim() !== '' ? g.claudeBaseUrl : undefined,
+                website: typeof g.website === 'string' && g.website.trim() !== '' ? g.website : undefined,
+                userDefined: true,
+                icon: <Globe size={18} />,
+            }));
+    } catch {
+        return [];
+    }
+}
+
+export function saveUserGateways(gateways: TransitProvider[]): void {
+    localStorage.setItem(USER_GATEWAYS_KEY, JSON.stringify(gateways));
+}
+
+export function createUserGateway(input: UserGatewayInput): TransitProvider {
+    const hex = Array.from(crypto.getRandomValues(new Uint8Array(4)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    return { id: `user-${hex}`, userDefined: true, icon: <Globe size={18} />, ...input };
+}
+
+export function getProvider(id: string | undefined, userGateways: TransitProvider[] = []): TransitProvider {
+    return TRANSIT_PROVIDERS.find(p => p.id === id)
+        ?? userGateways.find(p => p.id === id)
+        ?? TRANSIT_PROVIDERS[TRANSIT_PROVIDERS.length - 1];
+}
+
+export function inferProviderId(baseUrl: string, userGateways: TransitProvider[] = []): string {
+    const normalized = normalizeBaseUrl(baseUrl);
+    const exact = userGateways.find(g => normalizeBaseUrl(g.baseUrl) === normalized && normalized !== '');
+    if (exact) return exact.id;
+    if (normalized.includes('apikey.fan') || normalized.includes('apikey.fun')) return 'apikey-fun';
+    if (normalized.includes('openrouter.ai')) return 'openrouter';
+    if (normalized.includes('deepseek.com')) return 'deepseek';
     return 'custom';
 }
 ```
@@ -367,7 +424,7 @@ git commit -m "feat(transit): provider-aware opencode profile ids and names"
 
 **Interfaces:**
 - Consumes: existing `APIKEY_FUN_PROVIDER_ID`, `sync_openai_provider_to_path`, `remove_opencode_provider`.
-- Produces: private `fn is_transit_managed_provider(provider_id: &str) -> bool` and `const TRANSIT_PROVIDER_PREFIXES: [&str; 4]`. No public signature changes.
+- Produces: private `fn is_transit_managed_provider(provider_id: &str) -> bool` and `const TRANSIT_PROVIDER_PREFIXES: [&str; 5]`. No public signature changes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -411,11 +468,14 @@ Add to the tests module (next to `test_profile_collision_leaves_config_unchanged
         assert!(is_transit_managed_provider("openrouter-abcdef"));
         assert!(is_transit_managed_provider("deepseek-abcdef"));
         assert!(is_transit_managed_provider("custom-abcdef"));
+        assert!(is_transit_managed_provider("user-abcdef"));
         // Bare non-legacy ids and lookalikes stay unmanaged.
         assert!(!is_transit_managed_provider("openrouter"));
         assert!(!is_transit_managed_provider("deepseek"));
         assert!(!is_transit_managed_provider("custom"));
+        assert!(!is_transit_managed_provider("user"));
         assert!(!is_transit_managed_provider("openrouterx-abcdef"));
+        assert!(!is_transit_managed_provider("username-abcdef"));
         assert!(!is_transit_managed_provider("openai"));
         assert!(!is_transit_managed_provider("anthropic"));
         assert!(!is_transit_managed_provider(""));
@@ -435,7 +495,7 @@ Near `APIKEY_FUN_PROVIDER_ID` (line ~26) add:
 /// Profile id prefixes owned by the Transit Station feature. Bare ids other
 /// than the legacy `apikey-fun` are never app-managed, so user-defined
 /// providers with these names stay untouched.
-const TRANSIT_PROVIDER_PREFIXES: [&str; 4] = ["apikey-fun", "openrouter", "deepseek", "custom"];
+const TRANSIT_PROVIDER_PREFIXES: [&str; 5] = ["apikey-fun", "openrouter", "deepseek", "custom", "user"];
 
 fn is_transit_managed_provider(provider_id: &str) -> bool {
     if provider_id == APIKEY_FUN_PROVIDER_ID {
@@ -509,7 +569,7 @@ git commit -m "feat(transit): protect and allow removal of all managed gateway p
 At the top, add:
 
 ```ts
-import { TRANSIT_PROVIDERS, getProvider, inferProviderId } from '../config/transitProviders';
+import { TRANSIT_PROVIDERS, getProvider, inferProviderId, loadUserGateways, saveUserGateways, createUserGateway, type TransitProvider, type UserGatewayInput } from '../config/transitProviders';
 import { fetchBalanceSummary, emptyUsageSummary, type UsageSummary, type TransitQueryFn } from '../utils/transitBalance';
 ```
 
@@ -522,20 +582,28 @@ const transitQuery: TransitQueryFn = (url, key) => request<string>('query_transi
 
 Add `providerId?: string;` to `ManagedApiKey` (after `baseUrl: string;`).
 
-- [ ] **Step 2: Gateway state**
+- [ ] **Step 2: Gateway state (presets + user-defined)**
 
 After `const [baseUrl, setBaseUrl] = useState(DEFAULT_ENDPOINT);` add:
 
 ```ts
     const [providerId, setProviderId] = useState<string>('apikey-fun');
-    const activeProvider = getProvider(providerId);
+    const [userGateways, setUserGateways] = useState<TransitProvider[]>(() => loadUserGateways());
+    const activeProvider = getProvider(providerId, userGateways);
+
+    const persistUserGateways = (next: TransitProvider[]) => {
+        setUserGateways(next);
+        saveUserGateways(next);
+    };
 
     const handleSelectProvider = (id: string) => {
         setProviderId(id);
-        const next = getProvider(id);
+        const next = getProvider(id, userGateways);
         if (next.baseUrl) setBaseUrl(next.baseUrl);
     };
 ```
+
+Every provider lookup in this file passes `userGateways`: `getProvider(providerId, userGateways)`, `getProvider(inferProviderId(endpoint, userGateways), userGateways)`, `getProvider(inferProviderId(item.baseUrl || DEFAULT_ENDPOINT, userGateways), userGateways)`, and inside `profileInfo` / `handleToggleOpenCodeProfile` use `inferProviderId(url, userGateways)` + `getProvider(id, userGateways)`.
 
 - [ ] **Step 3: Replace the balance block in `runQuery`**
 
@@ -675,9 +743,9 @@ In the models card, make each chip removable and add the input row (replace the 
                             </div>
 ```
 
-- [ ] **Step 8: Gateway selector UI**
+- [ ] **Step 8: Hybrid gateway selector UI**
 
-Insert immediately after the header card's closing `</div>` (line ~517), before the Stats Grid:
+Insert immediately after the header card's closing `</div>` (line ~517), before the Stats Grid. `Pencil` and `Trash2` are already imported in the page. Add `Plus` to the lucide-react import.
 
 ```tsx
             {/* Gateway Selector */}
@@ -687,29 +755,151 @@ Insert immediately after the header card's closing `</div>` (line ~517), before 
                     {t('apiKeyFun.gateway.selectLabel', { defaultValue: 'Gateway' })}
                 </h2>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {TRANSIT_PROVIDERS.map(p => (
-                        <button
+                    {[...TRANSIT_PROVIDERS, ...userGateways].map(p => (
+                        <div
                             key={p.id}
-                            onClick={() => handleSelectProvider(p.id)}
-                            className={`flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${
+                            className={`relative flex items-center gap-3 p-3 rounded-xl border text-left transition-all cursor-pointer ${
                                 providerId === p.id
                                     ? 'border-blue-500 bg-blue-50 dark:bg-blue-500/10 ring-2 ring-blue-500/20'
                                     : 'border-gray-200 dark:border-base-300 hover:border-blue-300 dark:hover:border-blue-700 bg-gray-50/50 dark:bg-base-200/50'
                             }`}
+                            onClick={() => handleSelectProvider(p.id)}
                         >
+                            {p.userDefined && (
+                                <span className="absolute top-1.5 right-1.5 flex items-center gap-1">
+                                    <button
+                                        onClick={e => { e.stopPropagation(); openGatewayEditor(p); }}
+                                        className="text-gray-400 hover:text-blue-500 transition-colors"
+                                        title={t('apiKeyFun.gateway.editTitle', { defaultValue: 'Edit gateway' })}
+                                    >
+                                        <Pencil size={12} />
+                                    </button>
+                                    <button
+                                        onClick={e => { e.stopPropagation(); deleteUserGateway(p.id); }}
+                                        className="text-gray-400 hover:text-red-500 transition-colors"
+                                        title={t('apiKeyFun.gateway.delete', { defaultValue: 'Delete gateway' })}
+                                    >
+                                        <Trash2 size={12} />
+                                    </button>
+                                </span>
+                            )}
                             <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-white dark:bg-base-100 border border-gray-100 dark:border-base-300 shrink-0">
                                 {p.icon}
                             </span>
-                            <span className="flex flex-col min-w-0">
+                            <span className="flex flex-col min-w-0 pr-4">
                                 <span className="text-sm font-semibold text-gray-900 dark:text-white truncate">{p.name}</span>
                                 <span className="text-[10px] text-gray-500 dark:text-gray-400 truncate">
-                                    {t(`apiKeyFun.gateway.${p.id}.tagline`, { defaultValue: p.baseUrl || 'Any OpenAI-compatible endpoint' })}
+                                    {p.userDefined
+                                        ? (p.baseUrl || t('apiKeyFun.gateway.custom.tagline', { defaultValue: 'Any OpenAI-compatible endpoint' }))
+                                        : t(`apiKeyFun.gateway.${p.id}.tagline`, { defaultValue: p.baseUrl || 'Any OpenAI-compatible endpoint' })}
                                 </span>
                             </span>
-                        </button>
+                        </div>
                     ))}
+                    <button
+                        onClick={() => openGatewayEditor(undefined)}
+                        className="flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-gray-300 dark:border-base-300 text-gray-500 dark:text-gray-400 hover:border-blue-400 hover:text-blue-500 transition-all text-sm font-medium"
+                    >
+                        <Plus size={16} />
+                        {t('apiKeyFun.gateway.addTitle', { defaultValue: 'Add gateway' })}
+                    </button>
                 </div>
             </div>
+```
+
+- [ ] **Step 8b: Gateway editor modal**
+
+Add state and handlers (after `handleSelectProvider`):
+
+```ts
+    const [gatewayEditorOpen, setGatewayEditorOpen] = useState(false);
+    const [editingGatewayId, setEditingGatewayId] = useState<string | null>(null);
+    const [gatewayForm, setGatewayForm] = useState<UserGatewayInput>({
+        name: '', baseUrl: '', balanceKind: 'sub2api-auto', claudeCompatible: true,
+    });
+
+    const openGatewayEditor = (provider?: TransitProvider) => {
+        setEditingGatewayId(provider?.id ?? null);
+        setGatewayForm(provider
+            ? {
+                name: provider.name,
+                baseUrl: provider.baseUrl,
+                balanceKind: provider.balanceKind,
+                claudeCompatible: provider.claudeCompatible,
+                claudeBaseUrl: provider.claudeBaseUrl,
+                website: provider.website,
+            }
+            : { name: '', baseUrl: '', balanceKind: 'sub2api-auto', claudeCompatible: true });
+        setGatewayEditorOpen(true);
+    };
+
+    const saveGatewayEditor = () => {
+        const name = gatewayForm.name.trim();
+        const baseUrl = gatewayForm.baseUrl.trim().replace(/\/+$/, '');
+        if (!name || !baseUrl) {
+            showToast(t('apiKeyFun.gateway.formIncomplete', { defaultValue: 'Name and Base URL are required' }), 'error');
+            return;
+        }
+        if (editingGatewayId) {
+            persistUserGateways(userGateways.map(g => g.id === editingGatewayId
+                ? { ...g, ...gatewayForm, name, baseUrl }
+                : g));
+        } else {
+            persistUserGateways([...userGateways, createUserGateway({ ...gatewayForm, name, baseUrl })]);
+        }
+        setGatewayEditorOpen(false);
+    };
+
+    const deleteUserGateway = (id: string) => {
+        persistUserGateways(userGateways.filter(g => g.id !== id));
+        if (providerId === id) handleSelectProvider('custom');
+    };
+```
+
+Render at the end of the page (before the closing `</motion.div>`):
+
+```tsx
+            {gatewayEditorOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setGatewayEditorOpen(false)}>
+                    <div className="bg-white dark:bg-base-100 rounded-2xl shadow-xl border border-gray-100 dark:border-base-300 w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-base font-bold text-gray-900 dark:text-white mb-4">
+                            {editingGatewayId
+                                ? t('apiKeyFun.gateway.editTitle', { defaultValue: 'Edit gateway' })
+                                : t('apiKeyFun.gateway.addTitle', { defaultValue: 'Add gateway' })}
+                        </h3>
+                        <div className="flex flex-col gap-3">
+                            <div className="form-control">
+                                <label className="label mb-1"><span className="label-text font-bold text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.nameLabel', { defaultValue: 'Name' })} <span className="text-red-500">*</span></span></label>
+                                <input className="input input-sm w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg" value={gatewayForm.name}
+                                    onChange={e => setGatewayForm(f => ({ ...f, name: e.target.value }))} />
+                            </div>
+                            <div className="form-control">
+                                <label className="label mb-1"><span className="label-text font-bold text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.baseUrlLabel', { defaultValue: 'Base URL' })} <span className="text-red-500">*</span></span></label>
+                                <input className="input input-sm w-full font-mono text-xs bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg" placeholder="https://api.example.com/v1" value={gatewayForm.baseUrl}
+                                    onChange={e => setGatewayForm(f => ({ ...f, baseUrl: e.target.value }))} />
+                            </div>
+                            <div className="form-control">
+                                <label className="label mb-1"><span className="label-text font-bold text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.balanceKindLabel', { defaultValue: 'Balance query type' })}</span></label>
+                                <select className="select select-sm w-full bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-lg" value={gatewayForm.balanceKind}
+                                    onChange={e => setGatewayForm(f => ({ ...f, balanceKind: e.target.value as UserGatewayInput['balanceKind'] }))}>
+                                    <option value="sub2api-auto">{t('apiKeyFun.gateway.balance.sub2api', { defaultValue: 'Auto (relay /usage → dashboard billing)' })}</option>
+                                    <option value="openrouter-credits">{t('apiKeyFun.gateway.balance.openrouter', { defaultValue: 'OpenRouter-style /credits' })}</option>
+                                    <option value="deepseek-balance">{t('apiKeyFun.gateway.balance.deepseek', { defaultValue: 'DeepSeek-style /user/balance' })}</option>
+                                </select>
+                            </div>
+                            <label className="label cursor-pointer justify-start gap-3 py-1">
+                                <input type="checkbox" className="checkbox checkbox-sm checkbox-primary" checked={gatewayForm.claudeCompatible}
+                                    onChange={e => setGatewayForm(f => ({ ...f, claudeCompatible: e.target.checked }))} />
+                                <span className="label-text text-sm text-slate-700 dark:text-gray-300">{t('apiKeyFun.gateway.claudeCompatLabel', { defaultValue: 'Anthropic-compatible (Claude Code sync)' })}</span>
+                            </label>
+                            <div className="flex justify-end gap-2 mt-2">
+                                <button className="btn btn-sm btn-ghost" onClick={() => setGatewayEditorOpen(false)}>{t('common.cancel') || 'Cancel'}</button>
+                                <button className="btn btn-sm bg-blue-500 hover:bg-blue-600 text-white border-none" onClick={saveGatewayEditor}>{t('common.save') || 'Save'}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 ```
 
 - [ ] **Step 9: Hero rebrand**
@@ -816,6 +1006,19 @@ git commit -m "feat(transit): gateway picker, per-provider balance, editable mod
       "openrouter": { "tagline": "Unified access to hundreds of models" },
       "deepseek": { "tagline": "Official DeepSeek API, Claude Code compatible" },
       "custom": { "tagline": "Any OpenAI-compatible endpoint" },
+      "addTitle": "Add gateway",
+      "editTitle": "Edit gateway",
+      "delete": "Delete gateway",
+      "nameLabel": "Name",
+      "baseUrlLabel": "Base URL",
+      "balanceKindLabel": "Balance query type",
+      "balance": {
+        "sub2api": "Auto (relay /usage → dashboard billing)",
+        "openrouter": "OpenRouter-style /credits",
+        "deepseek": "DeepSeek-style /user/balance"
+      },
+      "claudeCompatLabel": "Anthropic-compatible (Claude Code sync)",
+      "formIncomplete": "Name and Base URL are required",
       "claudeUnavailable": "This gateway has no Anthropic-compatible endpoint, so Claude Code sync is unavailable.",
       "claudeUnavailableShort": "Claude Code: N/A"
     },
@@ -835,6 +1038,19 @@ git commit -m "feat(transit): gateway picker, per-provider balance, editable mod
       "openrouter": { "tagline": "聚合数百款模型的统一入口" },
       "deepseek": { "tagline": "DeepSeek 官方 API，兼容 Claude Code" },
       "custom": { "tagline": "任意 OpenAI 兼容接口" },
+      "addTitle": "添加网关",
+      "editTitle": "编辑网关",
+      "delete": "删除网关",
+      "nameLabel": "名称",
+      "baseUrlLabel": "接口地址",
+      "balanceKindLabel": "余额查询方式",
+      "balance": {
+        "sub2api": "自动（中转 /usage → 计费看板）",
+        "openrouter": "OpenRouter 式 /credits",
+        "deepseek": "DeepSeek 式 /user/balance"
+      },
+      "claudeCompatLabel": "兼容 Anthropic 协议（可同步 Claude Code）",
+      "formIncomplete": "名称和接口地址为必填项",
       "claudeUnavailable": "该网关没有 Anthropic 兼容端点，无法同步 Claude Code。",
       "claudeUnavailableShort": "Claude Code：不可用"
     },
@@ -869,14 +1085,15 @@ Expected: all clean.
 
 - [ ] **Step 2: Manual smoke checklist (needs the dev app: `npm run tauri dev`)**
 
-- Transit Station shows 4 gateway cards with icons (APIKEY.FUN logo, OpenRouter, DeepSeek, Globe).
+- Transit Station shows 4 preset gateway cards with icons (APIKEY.FUN logo, OpenRouter, DeepSeek, Globe) plus user-added gateway cards and the "Add gateway" dashed card.
+- Add / edit / delete a user gateway: survives page reload (localStorage `transit_user_gateways_local`); a saved key queried against a user gateway shows its name badge and selects it on click.
 - Selecting a preset fills the base URL; editing the URL still works.
 - OpenRouter key: model list loads; balance shows `$` remaining or `--` with no error when the key lacks credits permission; Claude Code button replaced by "Claude Code: N/A".
 - DeepSeek key: model list loads; balance shows CNY/USD total; Claude sync writes `https://api.deepseek.com/anthropic`.
 - APIKEY.FUN key: balance/usage behaves exactly as before (sub2api → dashboard fallback).
 - Legacy saved keys appear with an inferred provider badge and still query.
 - Models: manual Add (Enter key too) and chip X remove persist after page reload.
-- OpenCode sync creates `openrouter-*` / `deepseek-*` profile ids with gateway names; deactivation removes them (Task 4 guards).
+- OpenCode sync creates `openrouter-*` / `deepseek-*` / `user-*` profile ids with gateway names; deactivation removes them (Task 4 guards).
 
 - [ ] **Step 3: Report**
 

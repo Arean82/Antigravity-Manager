@@ -23,8 +23,6 @@ listing, and CLI sync options adapt to the selection.
 
 - Proxy upstream routing through these gateways (the proxy's 3rd-party support
   remains the z.ai Anthropic provider).
-- User-defined persistent gateway entries in the picker (registry shape allows
-  adding this later; not in this round).
 - A frontend test framework (the repo has none; parsers are kept pure for
   future testing).
 
@@ -36,9 +34,11 @@ edit generalizes the key-ownership guard in
 `src-tauri/src/proxy/opencode_sync.rs` (~line 1653): today it only protects
 provider ids starting with `apikey-fun-` from being overwritten by a different
 API key; it must apply to every provider id this app manages
-(`openrouter-*`, `deepseek-*`, `custom-*`), otherwise multi-gateway profiles
-lose that protection. The guard logic itself (compare stored `options.apiKey`
-with the incoming key) is unchanged and safe to apply universally.
+(`openrouter-*`, `deepseek-*`, `custom-*`, `user-*`), otherwise multi-gateway
+profiles lose that protection. The removal allow-list (~line 4227) gets the
+same generalization via a shared managed-prefix predicate. The guard logic
+itself (compare stored `options.apiKey` with the incoming key) is unchanged
+and safe to apply universally.
 
 ## Provider Registry
 
@@ -63,6 +63,18 @@ export interface TransitProvider {
 the key badges. Source: `@lobehub/icons` (already a dependency) for OpenRouter
 and DeepSeek; the existing `docs/images/APIKEYFUN.png` asset for APIKEY.FUN;
 lucide `Globe` for Custom. No new dependencies.
+
+**User-defined gateways (hybrid registry)**: the picker is not limited to
+presets. Users can add their own gateway entries (name, base URL, balance
+kind, Claude-compatibility toggle, optional Claude base URL and website),
+persisted in localStorage under `transit_user_gateways_local` — the same
+storage pattern as the managed keys. Each entry gets an id of the form
+`user-<8 hex chars>`. The effective gateway list is presets + user entries;
+user cards show edit/delete controls in the picker, and a generic `Globe`
+icon. Balance kind choices for user gateways: `sub2api-auto` (default),
+`openrouter-credits`, `deepseek-balance`. The Rust managed-prefix list gains
+`user` so OpenCode profiles created for user gateways enjoy the same
+ownership guard and removable-allow-list as preset gateways.
 
 | Preset | Base URL | Balance | Claude Code |
 |---|---|---|---|
