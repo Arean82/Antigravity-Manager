@@ -27,6 +27,22 @@ const APIKEY_FUN_PROVIDER_ID: &str = "apikey-fun";
 const MAX_PROVIDER_ID_LEN: usize = 128;
 const OPENAI_COMPATIBLE_NPM: &str = "@ai-sdk/openai-compatible";
 
+/// Profile id prefixes owned by the Transit Station feature. Bare ids other
+/// than the legacy `apikey-fun` are never app-managed, so user-defined
+/// providers with these names stay untouched.
+const TRANSIT_PROVIDER_PREFIXES: [&str; 5] = ["apikey-fun", "openrouter", "deepseek", "custom", "user"];
+
+fn is_transit_managed_provider(provider_id: &str) -> bool {
+    if provider_id == APIKEY_FUN_PROVIDER_ID {
+        return true;
+    }
+    TRANSIT_PROVIDER_PREFIXES.iter().any(|prefix| {
+        provider_id.len() > prefix.len()
+            && provider_id.starts_with(prefix)
+            && provider_id.as_bytes()[prefix.len()] == b'-'
+    })
+}
+
 static OPENCODE_CONFIG_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn acquire_opencode_config_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -1650,7 +1666,7 @@ fn sync_openai_provider_to_path(
         Err(error) => return Err(format!("Failed to read OpenCode config: {}", error)),
     };
 
-    if provider_id.starts_with("apikey-fun-") {
+    if is_transit_managed_provider(provider_id) {
         if let Some(existing) = config.get("provider").and_then(|p| p.get(provider_id)) {
             let existing_key = existing
                 .get("options")
@@ -2846,6 +2862,52 @@ mod tests {
         assert!(is_provider_validation_error(&error));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
         assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn test_sync_refuses_to_hijack_profile_of_any_managed_gateway() {
+        for id in ["openrouter-abcdef", "deepseek-abcdef", "custom-abcdef", "user-abcdef"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(OPENCODE_CONFIG_FILE);
+            let original = format!(
+                r#"{{"provider":{{"{id}":{{"options":{{"apiKey":"first-key"}}}}}}}}"#
+            );
+            fs::write(&path, &original).unwrap();
+            let error = sync_openai_provider_to_path(
+                &path,
+                id,
+                "Gateway",
+                "https://api.example.com",
+                "second-key",
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("already belongs to another API key"),
+                "guard must protect {id}: got {error}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn test_managed_gateway_predicate_matrix() {
+        assert!(is_transit_managed_provider("apikey-fun"));
+        assert!(is_transit_managed_provider("apikey-fun-abcdef"));
+        assert!(is_transit_managed_provider("openrouter-abcdef"));
+        assert!(is_transit_managed_provider("deepseek-abcdef"));
+        assert!(is_transit_managed_provider("custom-abcdef"));
+        assert!(is_transit_managed_provider("user-abcdef"));
+        // Bare non-legacy ids and lookalikes stay unmanaged.
+        assert!(!is_transit_managed_provider("openrouter"));
+        assert!(!is_transit_managed_provider("deepseek"));
+        assert!(!is_transit_managed_provider("custom"));
+        assert!(!is_transit_managed_provider("user"));
+        assert!(!is_transit_managed_provider("openrouterx-abcdef"));
+        assert!(!is_transit_managed_provider("username-abcdef"));
+        assert!(!is_transit_managed_provider("openai"));
+        assert!(!is_transit_managed_provider("anthropic"));
+        assert!(!is_transit_managed_provider(""));
     }
 
     #[test]
@@ -4224,9 +4286,7 @@ pub fn remove_opencode_provider(provider_id: &str) -> Result<(), String> {
     }
 
     // Only profiles managed by this feature may be removed.
-    if provider_id != APIKEY_FUN_PROVIDER_ID
-        && !provider_id.starts_with(&format!("{}-", APIKEY_FUN_PROVIDER_ID))
-    {
+    if !is_transit_managed_provider(provider_id) {
         return Err(format!(
             "Provider '{}' is not managed by Antigravity-Manager and cannot be removed",
             provider_id
