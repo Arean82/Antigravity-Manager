@@ -102,6 +102,14 @@ export const ApiKeyFun: React.FC = () => {
         setProviderId(id);
         const next = getProvider(id, userGateways);
         if (next.baseUrl) setBaseUrl(next.baseUrl);
+        // Drop results from the previously selected gateway, like a key change does.
+        ++querySeqRef.current;
+        setQuerying(false);
+        setUsage(null);
+        setModels([]);
+        setModelsSource(null);
+        setQueryError(null);
+        setModelsError(null);
     };
 
     // Gateway editor modal state
@@ -357,7 +365,7 @@ export const ApiKeyFun: React.FC = () => {
         const rawKey = apiKey.trim();
         const cleanUrl = baseUrl.trim().replace(/\/+$/, '');
         const baseWithoutV1 = cleanUrl.replace(/\/v1$/i, '');
-        const claudeUrl = (activeProvider.claudeBaseUrl || baseUrl).trim().replace(/\/+$/, '');
+        const claudeUrl = (activeProvider.claudeBaseUrl || baseWithoutV1).trim().replace(/\/+$/, '');
         const proxyUrl = app === 'Codex' ? `${baseWithoutV1}/v1` : claudeUrl;
         const syncKey = rawKey;
 
